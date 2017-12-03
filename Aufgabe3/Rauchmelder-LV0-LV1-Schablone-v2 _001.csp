@@ -1,0 +1,87 @@
+-------------------------------------------------------------
+-- Rauchmelder LV0 und LV1
+-- LV1 fuehrt redundante Sensoren ein
+-- Version 1, SVP WiSe17
+-- Basisversion Torge Hinrichs, Bettina Buth
+-- Autoren LV1 XXXXXXXXXXXXXXXXXXXXXXXXX
+-------------------------------------------------------------
+
+NO_S = 2
+
+SENSOR_IDS = { 0..NO_S-1 }
+
+channel alert, ack, reset_fd
+channel smoke, no_smoke
+channel reset
+channel reset_sensors
+channel smoke_detected : {0 .. NO_S-1}
+channel smoke_ack : {0 .. NO_S-1}
+channel sensor_smoke, sensor_normal
+channel alert_on, alert_off
+
+---
+-- Umgebungsprozesse fuer LV0 und LV1
+---
+
+ENVIRONMENT_CHANNEL = {|smoke, no_smoke, alert, ack, reset_fd|}
+
+FIRE = smoke -> FIRE
+        |~| no_smoke -> FIRE
+
+MANUAL_RESET = reset -> SKIP
+
+SENSOR_RESET = reset -> SKIP
+
+FIRE_DEPARTMENT = alert -> ack -> FIRE_DEPARTMENT
+
+---
+-- LVL0 mit Interrupt fuer Reset
+---
+SMOKE_DETECTOR_LVL0 = smoke -> alert -> ack -> SMOKE_DETECTOR_LVL0
+        [] no_smoke -> SMOKE_DETECTOR_LVL0
+
+LVL0 = (((FIRE ||| FIRE_DEPARTMENT)  [| ENVIRONMENT_CHANNEL |] SMOKE_DETECTOR_LVL0) /\ MANUAL_RESET) ; LVL0
+
+---
+-- LV1 Prozesse
+
+SENSOR(id, zustand) = 	(zustand == sensor_normal) & smoke -> smoke_detected!id -> smoke_ack?id -> SENSOR(id, sensor_smoke)
+						[]
+        				(zustand == sensor_normal) & no_smoke -> SENSOR(id, zustand)
+        				[]
+        				reset_sensors -> SENSOR(id, sensor_normal)
+
+SENSORS =  [| {|smoke, no_smoke, reset_sensors|} |] id: SENSOR_IDS @ SENSOR(id, sensor_normal)
+
+OBSERVER(zustand)  = 	
+						(zustand == sensor_normal) & smoke_detected?id -> smoke_ack!id -> alert -> OBSERVER(sensor_smoke)
+						[]
+						(zustand == sensor_smoke) & smoke_detected?id -> smoke_ack!id -> OBSERVER(zustand)
+						[]
+						ack -> reset_sensors -> OBSERVER(sensor_normal)
+
+LVL1 = (((FIRE ||| FIRE_DEPARTMENT) [| ENVIRONMENT_CHANNEL |] (SENSORS [|{|reset_sensors,smoke_detected,smoke_ack|}|] OBSERVER(sensor_normal))) /\ MANUAL_RESET) ; LVL1
+
+LVL1_H = LVL1 \ {| smoke_detected,smoke_ack,reset_sensors |}
+
+---------------------------------------------
+-- Assertions und Checks
+---------------------------------------------
+
+-- SOME SIMPLE TESTS
+TEST1 = smoke -> alert -> ack -> STOP
+TEST2 = smoke -> alert -> ack -> smoke -> alert -> ack -> STOP
+TEST3 = smoke -> alert -> reset -> smoke -> alert -> ack -> STOP
+
+assert LVL1_H [T= TEST1
+assert LVL1_H [T= TEST2
+assert LVL1_H [T= TEST3
+
+-- SOME ADVANCED TESTS
+assert LVL0 :[deadlock free]
+assert LVL1 :[deadlock free]
+
+-- BACK TO BACK TESTS
+
+assert LVL1_H [T= LVL0
+assert LVL0 [T= LVL1_H
