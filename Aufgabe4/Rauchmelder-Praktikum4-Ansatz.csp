@@ -1,0 +1,145 @@
+-------------------------------------------------------------
+-- Rauchmelder LV2
+-- Basisversion Torge Hinrichs, Bettina Buth
+-------------------------------------------------------------
+
+-- Definitions:
+
+NUMBER_OF_ROOMS = 7
+IDS = {0 .. NUMBER_OF_ROOMS-1} 
+
+
+-- Channels:
+
+-- Environment:
+channel smoke, no_smoke : IDS 
+channel alert, ack
+-- Smoke detector:
+-- Description:
+-- smoke_detected: ID of room.ID of link to predecessor. ID of link to successor
+-- Link from Sensor0 to Sensor1 has ID 0, link from Sensor1 to Sensor2 has ID 1, ...
+channel smoke_detected : IDS.IDS.IDS
+channel smoke_ack : IDS
+channel reset
+--Sensor0 to Observer:
+channel smoke_detected_in_room : IDS
+
+
+
+-- Processes:
+
+
+-- Environment:
+
+ENVIRONMENT_CHANNEL = {| smoke, no_smoke, alert, ack |}
+
+FIRE_DEPARTMENT = alert -> ack -> FIRE_DEPARTMENT
+
+-- in jedem Raum kann Feuer auftreten, auch in mehreren Raeumen gleichzeitig(?):
+--
+FIRE(room_id) = smoke!x -> []x: IDS @ x ->FIRE(x)
+            |~| no_smoke!x -> []x: IDS @ x ->FIRE(x)
+
+		
+-- Reset:
+MANUAL_RESET = reset -> SKIP
+
+
+-- Rauchmelder:
+
+-- SENSOR.
+-- entweder:
+-- 1) kein Feuer, "Normal-Zustand". 
+-- 2) entdeckt selber Feuer und leitet Feuer-Meldung an Vorgaenger und Nachfolger weiter.
+-- 3) leitet Feuer-Meldung an Vorgaenger und Nachfolger weiter.
+-- 4) ACK an naechsten Sensor.
+-- 5) Reset.
+--
+SENSOR(id) = no_smoke.id -> SENSOR(id)
+           [] smoke?x -> if (x == id) then smoke_detected!id!id-1!id -> SENSOR(id)
+           [] smoke_detected.x?y?z -> if(y == id) then smoke_detected.x!id-1 -> SENSOR(id) else if(z == id-1) then smoke_detected.x.y!id -> SENSOR(id) else SENSOR(id)   
+           [] smoke_ack.id -> if(id != (NUMBER_OF_ROOMS-1) ) then smoke_ack.(id+1) -> SENSOR(id) else SENSOR(id)
+           [] reset -> SENSOR(id)
+
+					
+SENSORS = (  [| {|smoke_detected, smoke_ack, reset|} |] id:{1..NUMBER_OF_ROOMS-1} @ SENSOR(id)  )
+       				
+					
+-- SENSOR_S0.				
+-- entweder:
+-- 1) kein Feuer, "Normal-Zustand". 
+-- 2) entdeckt selber Feuer, benachrichtigt Observer.
+-- 3) leitet Feuer-Meldung von Vorgaenger und Nachfolger weiter.
+-- 4) ACK an naechsten Sensor.
+-- 5) Reset.
+--
+SENSOR_S0 = no_smoke.0 -> SENSOR_S0 
+          [] smoke?x -> if(x == 0) then smoke_detected_in_room!0 -> SENSOR_S0
+          [] smoke_detected?x?y?z -> if( (y == 0) || (z == NUMBER_OF_ROOMS-1) ) then smoke_detected_in_room!x -> SENSOR_S0
+		  [] smoke_ack.0 -> smoke_ack.1 -> SENSOR_S0
+		  [] reset -> SENSOR_S0
+
+
+OBSERVER = smoke_detected_in_room?id -> alert -> ack -> smoke_ack.0 -> OBSERVER
+
+
+SMOKE_DETECTOR = ( SENSORS [| smoke_detected, smoke_ack, reset |] (SENSOR_S0 [| smoke_detected_in_room, smoke_ack |] OBSERVER)  )
+
+					
+LVL2 = (((FIRE ||| FIRE_DEPARTMENT)  [| ENVIRONMENT_CHANNEL |] SMOKE_DETECTOR) /\ MANUAL_RESET) ; LVL2
+
+
+
+---
+-- LVL0 mit Interrupt fuer Reset
+---
+--SMOKE_DETECTOR_LVL0 = smoke -> alert -> ack -> SMOKE_DETECTOR_LVL0
+--      [] no_smoke -> SMOKE_DETECTOR_LVL0
+
+--LVL0 = (((FIRE ||| FIRE_DEPARTMENT)  [| ENVIRONMENT_CHANNEL |] SMOKE_DETECTOR_LVL0) /\ MANUAL_RESET) ; LVL0
+
+
+---
+-- LV1 Prozesse
+---
+--SENSOR(id, zustand) = (zustand == sensor_normal) & smoke -> smoke_detected!id -> smoke_ack?id -> SENSOR(id, sensor_smoke)
+--						[]
+--       				(zustand == sensor_normal) & no_smoke -> SENSOR(id, zustand)
+
+--SENSORS =  ( [| {|smoke, no_smoke|} |] id: { 0..NO_S-1 } @ SENSOR(id, sensor_normal) ) /\ SENSOR_RESET; SENSORS
+
+--OBSERVER(zustand)  = 	(zustand == sensor_normal) & smoke_detected?id -> smoke_ack!id -> alert -> OBSERVER(sensor_smoke)
+--						[]
+--						(zustand == sensor_smoke) & smoke_detected?id -> smoke_ack!id -> OBSERVER(zustand)
+--						[]
+--						ack -> reset_sensors -> OBSERVER(sensor_normal)
+
+--LVL1 = (((FIRE ||| FIRE_DEPARTMENT) [| ENVIRONMENT_CHANNEL |] (SENSORS [|{|reset_sensors,smoke_detected,smoke_ack|}|] OBSERVER(sensor_normal))) /\ MANUAL_RESET) ; LVL1
+
+--LVL1_H = LVL1 \ {| smoke_detected,smoke_ack,reset_sensors |}
+
+
+---------------------------------------------
+-- Assertions und Checks
+---------------------------------------------
+
+-- SOME SIMPLE TESTS
+--TEST1 = smoke -> alert -> ack -> STOP
+--TEST2 = smoke -> alert -> ack -> smoke -> alert -> ack -> STOP
+--TEST3 = smoke -> alert -> reset -> smoke -> alert -> ack -> STOP
+
+--assert LVL1_H [T= TEST1
+--assert LVL1_H [T= TEST2
+--assert LVL1_H [T= TEST3
+
+-- SOME ADVANCED TESTS
+--assert LVL0 :[deadlock free]
+--assert LVL1 :[deadlock free]
+
+-- BACK TO BACK TESTS
+
+--assert LVL1_H [T= LVL0
+--assert LVL0 [T= LVL1_H
+
+
+--END.
