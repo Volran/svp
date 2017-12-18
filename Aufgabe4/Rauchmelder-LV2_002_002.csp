@@ -1,0 +1,131 @@
+-------------------------------------------------------------
+-- Rauchmelder LV0 und LV1
+-- LV1 fuehrt redundante Sensoren ein
+-- Version 1, SVP WiSe17
+-- Basisversion Torge Hinrichs, Bettina Buth
+-- Autoren LV1 XXXXXXXXXXXXXXXXXXXXXXXXX
+-------------------------------------------------------------
+
+NO_S = 2
+SPEICHER = 1
+
+SENSOR_IDS = { 0..NO_S-1 }
+
+channel alert, ack
+channel smoke, no_smoke : {0 .. NO_S-1}
+channel reset
+channel reset_sensors
+channel smoke_detected : {0 .. NO_S-1}.{up, down}.{0 .. NO_S-1}
+channel sensor_smoke, sensor_normal
+channel alert_on, alert_off
+channel smoke_alert, smoke_ack : {0 .. NO_S-1}
+channel s_up, s_down, s_ack, s_al, s_res : {0 .. NO_S-1}.{0 .. NO_S-1}
+channel up, down, smoke_ack_
+channel d_test_1, d_test_2
+
+
+--- FIRE(0) ||| FIRE(1)
+-- Umgebungsprozesse
+---
+
+ENVIRONMENT_CHANNEL = {|smoke, no_smoke, alert, ack|}
+
+FIRES =  ||| id: SENSOR_IDS @ FIRE(id)
+
+FIRE(id) = 
+		(smoke!id -> FIRE(id))
+        |~|
+        (no_smoke!id -> FIRE(id))
+
+MANUAL_RESET = reset -> SKIP
+
+FIRE_DEPARTMENT = alert -> ack -> FIRE_DEPARTMENT
+
+---
+-- LV2 Prozesse
+---
+
+SENSORS =  [| {| smoke_ack, smoke_detected|} |] id: SENSOR_IDS @ 	(	SENSOR(id, sensor_normal) 
+																		[| {| s_up, s_down, s_res |} |] 
+																		(	SENSOR_Sender(id, <>, <>, <>) 
+																			[| {| s_up, s_down, s_ack, s_al, s_res |} |]
+																			SENSOR_Empfaenger
+																		)
+																	) --\ {| s_up, s_down, s_ack |}
+
+SENSOR(id, zustand) =
+					
+			--no_smoke.id -> SENSOR(id, zustand)
+			--[]
+			((zustand == sensor_normal) & smoke.id -> s_up.id.id -> s_down.id.id -> SENSOR(id, sensor_smoke))
+			[]
+			--((zustand != sensor_normal) & smoke.id -> SENSOR(id, sensor_smoke))
+			--[]	
+			--(reset -> SENSOR(id, sensor_normal))
+
+SENSOR_Sender(id, s_up_, s_down_, s_ack_, s_al_) =
+
+			s_up.id?x -> (if (#s_up_ < SPEICHER) then SENSOR_Sender(id, (s_up_^<x>), s_down_, s_ack_, s_al_) else SENSOR_Sender(id, s_up_, s_down_, s_ack_, s_al_))
+			[]
+			s_down.id?x -> (if (#s_down_ < SPEICHER) then SENSOR_Sender(id, s_up_, (s_down_^<x>), s_ack_, s_al_) else SENSOR_Sender(id, s_up_, s_down_, s_ack_, s_al_))
+			[]
+			s_ack.id?x -> (if (#s_ack_ < SPEICHER) then SENSOR_Sender(id, s_up_, s_down_, (s_ack_^<x>, s_al_)) else SENSOR_Sender(id, s_up_, s_down_, s_ack_, s_al_))
+			[]
+			s_al.id?x -> (if (#s_al_ < SPEICHER) then SENSOR_Sender(id, s_up_, s_down_, (s_ack_, s_al_^<x>)) else SENSOR_Sender(id, s_up_, s_down_, s_ack_, s_al_))
+			[]
+			(#s_up_ > 0) & smoke_detected!((id+1) % NO_S).up.head(s_up_) -> SENSOR_Sender(id, tail(s_up_), s_down_, s_ack_, s_al_)
+			[]
+			(#s_down_ > 0) & smoke_detected!((id+NO_S-1) % NO_S).down.head(s_down_) -> SENSOR_Sender(id, s_up_, tail(s_down_), s_ack_, s_al_)
+			[]
+			(#s_ack_ > 0) & smoke_ack!((id+1) % NO_S) -> SENSOR_Sender(id, s_up_, s_down_, tail(s_ack_), s_al_)
+			[]
+			(#s_al_ > 0) & smoke_alert!head(s_al_) -> SENSOR_Sender(id, s_up_, s_down_, s_ack_, tail(s_al_))
+
+SENSOR_Empfaenger(id, s_res) =
+
+			((id == 0) & smoke_detected.id?y?x -> s_al.id.x -> SENSOR(id, zustand))
+        	[]
+			((id != 0) & smoke_detected.id.up?x -> s_up!id.x -> SENSOR(id, zustand)) 
+			[]
+			((id != 0) & smoke_detected.id.down?x -> s_down!id.x -> SENSOR(id, zustand))		
+			[]
+			((id == (NO_S-1)) & smoke_ack.id-> SENSOR(id, sensor_normal))
+			[]
+			((id < (NO_S-1)) & smoke_ack.id -> s_ack.id.id -> SENSOR(id, sensor_normal))
+			[]
+			((id == 0) & smoke_ack_ -> s_ack.id.id -> SENSOR(id, sensor_normal))
+
+
+OBSERVER(zustand, ack_) = 
+			((zustand == sensor_normal) & smoke_alert?x -> alert -> OBSERVER(smoke_alert.x, ack_))
+			[]
+			((zustand != sensor_normal) & smoke_alert?x -> OBSERVER(zustand, ack_))
+			[]
+			(ack -> OBSERVER(zustand, 1))
+			[]
+			(ack_ > 0) & (smoke_ack_ -> OBSERVER(sensor_normal, 0))
+
+
+LVL2 = ( FIRES ||| FIRE_DEPARTMENT ) [| ENVIRONMENT_CHANNEL |] ( SENSORS [|{| smoke_ack_, smoke_alert |}|] OBSERVER(sensor_normal, 0))
+
+LVL2_H = LVL2 \ {| smoke_detected, s_up, s_down, s_ack |}
+---------------------------------------------
+-- Assertions und Checks
+---------------------------------------------
+
+
+TEST1 = smoke.1 -> smoke_alert.1 -> alert -> ack -> STOP
+
+
+TEST2 =  |~| id: SENSOR_IDS @ TEST2_(id)
+TEST2_(id) = smoke.id -> smoke_alert.id -> alert -> ack -> STOP
+
+TEST3 = ||| id: SENSOR_IDS @ TEST3_(id)
+TEST3_(id) = smoke.id -> TEST3_(id)
+
+assert LVL2_H [T= TEST1
+assert LVL2_H [T= TEST2
+assert LVL2_H [T= TEST3
+
+assert LVL2 :[deadlock free]
+assert SENSORS :[deadlock free]
